@@ -758,8 +758,7 @@ class Connection(common.BaseObject):
             try:
                 chunk = sock_info.sock.recv(length)
             except:
-                # If recv was interrupted, discard the socket
-                # and re-raise the exception.
+                # recv was interrupted
                 sock_info.close()
                 raise
             if chunk == EMPTY:

@@ -23,14 +23,18 @@ import weakref
 from pymongo.errors import ConnectionFailure
 
 
-# TODO: long saga comment on mod_wsgi
-
 have_ssl = True
 try:
     import ssl
 except ImportError:
     have_ssl = False
 
+# mod_wsgi creates a synthetic mod_wsgi Python module; detect its version.
+# See Pool._watch_current_thread for full explanation.
+try:
+    from mod_wsgi import version as mod_wsgi_version
+except ImportError:
+    mod_wsgi_version = None
 
 # PyMongo does not use greenlet-aware connection pools by default, but it will
 # attempt to do so if you pass use_greenlets=True to Connection or
@@ -347,6 +351,7 @@ class BasePool(object):
         tid = self._get_thread_ident()
 
         if sock_info == NO_REQUEST:
+            # Ending a request
             self._refs.pop(tid, None)
             self._tid_to_sock.pop(tid, None)
         else:
@@ -354,6 +359,13 @@ class BasePool(object):
 
             if tid not in self._refs:
                 # Closure over tid.
+                # Do not access threadlocals in this function, or any
+                # function it calls! In the case of the Pool subclass and
+                # mod_wsgi 2.x, on_thread_died() is triggered when mod_wsgi
+                # calls PyThreadState_Clear(), which deferences the
+                # ThreadVigil and triggers the weakref callback. Accessing
+                # thread locals in this function, while PyThreadState_Clear()
+                # is in progress can cause leaks, see PYTHON-353.
                 def on_thread_died(ref):
                     try:
                         # End the request
@@ -364,7 +376,9 @@ class BasePool(object):
                         # or random exceptions on interpreter shutdown.
                         return
 
-                    self._return_socket(request_sock)
+                    # Was thread ever really assigned a socket before it died?
+                    if request_sock not in (NO_REQUEST, NO_SOCKET_YET):
+                        self._return_socket(request_sock)
 
                 self._watch_current_thread(on_thread_died)
 
@@ -378,10 +392,6 @@ class BasePool(object):
 
     def _watch_current_thread(self, callback):
         raise NotImplementedError
-
-
-class ThreadVigil(object):
-    pass
 
 
 class Pool(BasePool):
@@ -399,10 +409,25 @@ class Pool(BasePool):
         return thread.get_ident()
 
     def _watch_current_thread(self, callback):
+        # In mod_wsgi 2.x, thread state is deleted between HTTP requests,
+        # though the thread remains. This mismatch between thread locals and
+        # threads can cause bugs in Pool, but since mod_wsgi threads always
+        # last as long as the process, we don't have to watch for this thread's
+        # death. See PYTHON-353.
+        if mod_wsgi_version and mod_wsgi_version[0] <= 2:
+            return
+
         tid = self._get_thread_ident()
 
-        # Python prohibits weakrefs to object(), so watch an empty
-        # subclass of object.
+        # After a thread calls start_request() and we assign it a socket, we
+        # must watch the thread to know if it dies without calling end_request
+        # so we can return its socket to the idle pool, self.sockets. We watch
+        # for thread-death using a weakref callback to a thread local. The
+        # weakref is permitted on subclasses of object but not object() itself,
+        # so we make this class.
+        class ThreadVigil(object):
+            pass
+
         self._local.vigil = vigil = ThreadVigil()
         self._refs[tid] = weakref.ref(vigil, callback)
 
