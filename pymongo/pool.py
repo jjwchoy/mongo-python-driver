@@ -29,12 +29,6 @@ try:
 except ImportError:
     have_ssl = False
 
-# mod_wsgi creates a synthetic mod_wsgi Python module; detect its version.
-# See Pool._watch_current_thread for full explanation.
-try:
-    from mod_wsgi import version as mod_wsgi_version
-except ImportError:
-    mod_wsgi_version = None
 
 # PyMongo does not use greenlet-aware connection pools by default, but it will
 # attempt to do so if you pass use_greenlets=True to Connection or
@@ -437,14 +431,6 @@ class Pool(BasePool):
         pass
 
     def _watch_current_thread(self, callback):
-        # In mod_wsgi 2.x, thread state is deleted between HTTP requests,
-        # though the thread remains. This mismatch between thread locals and
-        # threads can cause bugs in Pool, but since mod_wsgi threads always
-        # last as long as the process, we don't have to watch for this thread's
-        # death. See PYTHON-353.
-        if mod_wsgi_version and mod_wsgi_version[0] <= 2:
-            return
-
         tid = self._get_thread_ident()
         self._local.vigil = vigil = Pool.ThreadVigil()
         self._refs[tid] = weakref.ref(vigil, callback)
