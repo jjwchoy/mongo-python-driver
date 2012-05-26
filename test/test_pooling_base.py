@@ -640,6 +640,10 @@ class _TestMaxPoolSize(_TestPoolingBase):
         nsock = len(cx_pool.sockets)
 
         # Socket-reclamation depends on timely garbage-collection
+        if 'PyPy' in sys.version:
+            import gc
+            gc.collect()
+
         if not sys.platform.startswith('java'):
             self.assertEqual(4, len(cx_pool.sockets))
 

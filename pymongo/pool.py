@@ -405,6 +405,25 @@ class Pool(BasePool):
         self._local = threading.local()
 
     # Overrides
+    def _get_request_state(self):
+        # In Python <= 2.6, a dead thread's locals aren't cleaned up until the
+        # next access. That can lead to a nasty race where a new thread with
+        # the same ident as a previous one does _get_request_state() and thinks
+        # it's still in the previous thread's request. Only when some thread
+        # next accesses self._local.vigil does the dead thread's vigil get
+        # destroyed, triggered on_thread_died and returning the request socket
+        # to self.sockets. At that point a different thread can acquire that
+        # socket, and with two threads using the same socket they'll read
+        # each other's data. A symptom is an AssertionError in
+        # Connection.__receive_message_on_socket().
+
+        # Accessing the thread local here guarantees that a previous thread's
+        # locals are cleaned up before we check request state, and so even if
+        # this thread has the same ident as a previous one, we don't think we're
+        # in the same request.
+        getattr(self._local, 'vigil', None)
+        return super(Pool, self)._get_request_state()
+
     def _get_thread_ident(self):
         return thread.get_ident()
 
