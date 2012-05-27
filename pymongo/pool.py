@@ -352,7 +352,9 @@ class BasePool(object):
             self._tid_to_sock[tid] = sock_info
 
             if tid not in self._refs:
-                # Closure over tid.
+                # Closure over tid and poolref. Don't refer directly to self,
+                # otherwise there's a cycle.
+
                 # Do not access threadlocals in this function, or any
                 # function it calls! In the case of the Pool subclass and
                 # mod_wsgi 2.x, on_thread_died() is triggered when mod_wsgi
@@ -360,19 +362,22 @@ class BasePool(object):
                 # ThreadVigil and triggers the weakref callback. Accessing
                 # thread locals in this function, while PyThreadState_Clear()
                 # is in progress can cause leaks, see PYTHON-353.
+                poolref = weakref.ref(self)
                 def on_thread_died(ref):
                     try:
-                        # End the request
-                        self._refs.pop(tid, None)
-                        request_sock = self._tid_to_sock.pop(tid)
-                    except:
-                        # KeyError if dead thread wasn't in a request,
-                        # or random exceptions on interpreter shutdown.
-                        return
+                        pool = poolref()
+                        if pool:
+                            # End the request
+                            pool._refs.pop(tid, None)
+                            request_sock = pool._tid_to_sock.pop(tid, None)
 
-                    # Was thread ever really assigned a socket before it died?
-                    if request_sock not in (NO_REQUEST, NO_SOCKET_YET):
-                        self._return_socket(request_sock)
+                            # Was thread ever assigned a socket before it died?
+                            if request_sock not in (NO_REQUEST, NO_SOCKET_YET):
+                                pool._return_socket(request_sock)
+                    except Exception, e:
+                        # Random exceptions on interpreter shutdown.
+                        print e
+                        pass
 
                 self._watch_current_thread(on_thread_died)
 
@@ -386,6 +391,15 @@ class BasePool(object):
 
     def _watch_current_thread(self, callback):
         raise NotImplementedError
+
+    def __del__(self):
+        # Avoid ResourceWarnings in Python 3
+        for sock_info in self.sockets:
+            sock_info.close()
+
+        for request_sock in self._tid_to_sock.values():
+            if request_sock not in (NO_REQUEST, NO_SOCKET_YET):
+                request_sock.close()
 
 
 class Pool(BasePool):
